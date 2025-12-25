@@ -1,11 +1,12 @@
 /**
- * Generator.gs - Main Generation Logic V6
+ * Generator.gs - Main Generation Logic V7
  * MAJOR IMPROVEMENTS:
  * - Smart character extraction (PEOPLE only, not locations!)
  * - All output in Bahasa Indonesia
- * - Detailed prompts for Image & Video generation
- * - Story table includes prompt columns
- * - Very detailed act descriptions
+ * - 3 types of prompts: Text2Img, Img2Img, Img2Vid
+ * - Better structure: Episode=ringkasan, Scene=cerita, Act=adegan+dialog
+ * - Shorter location/costume descriptions
+ * - Auto-update prompts when content changes
  */
 
 /**
@@ -37,9 +38,9 @@ function generateAll() {
     '• ' + settings.episodes + ' episode\n' +
     '• ' + totalScenes + ' scene\n' +
     '• ' + (totalScenes * 4) + ' act\n' +
-    '• Karakter + Image/Video Prompts\n\n' +
+    '• Karakter + 3 jenis Prompt\n\n' +
     'Semua output dalam Bahasa Indonesia.\n' +
-    'Waktu: 5-10 menit. Lanjutkan?',
+    'Waktu: 3-5 menit. Lanjutkan?',
     ui.ButtonSet.YES_NO
   );
   
@@ -61,10 +62,10 @@ function generateAll() {
       basicInfo.projectName || 'Project Saya'
     );
     
-    Utilities.sleep(2000);
+    Utilities.sleep(1500);
     
-    // ========== BATCH 2: Extract REAL Character Names (SMART!) ==========
-    toast('🔄 Batch 2/6: Mencari karakter (bukan lokasi!)...', '🎬', 30);
+    // ========== BATCH 2: Extract REAL Character Names ==========
+    toast('🔄 Batch 2/6: Mencari karakter...', '🎬', 30);
     
     const charNames = extractSmartCharacters(synopsis, basicInfo);
     Logger.log('Character names: ' + JSON.stringify(charNames));
@@ -73,45 +74,45 @@ function generateAll() {
       throw new Error('Tidak ada karakter ditemukan.');
     }
     
-    Utilities.sleep(2000);
+    Utilities.sleep(1500);
     
     // ========== BATCH 3: Get Character Details ==========
     toast('🔄 Batch 3/6: Membuat detail karakter...', '🎬', 60);
     
     const characters = [];
-    for (let i = 0; i < Math.min(charNames.length, 6); i++) {
-      toast(`🔄 Karakter ${i+1}/${Math.min(charNames.length, 6)}: ${charNames[i]}...`, '🎬', 20);
+    for (let i = 0; i < Math.min(charNames.length, 5); i++) {
+      toast(`🔄 Karakter ${i+1}/${Math.min(charNames.length, 5)}: ${charNames[i]}...`, '🎬', 20);
       
       const charDetail = getCharacterDetailSmart(charNames[i], synopsis, i, basicInfo);
       characters.push(charDetail);
       
-      Utilities.sleep(2000);
+      Utilities.sleep(1500);
     }
     
-    writeCharacters(characters);
+    writeCharactersWithPrompts(characters, basicInfo.style);
     stats.chars = characters.length;
     
-    Utilities.sleep(2000);
+    Utilities.sleep(1500);
     
-    // ========== BATCH 4: Generate Episodes (Indonesian) ==========
+    // ========== BATCH 4: Generate Episodes ==========
     toast('🔄 Batch 4/6: Membuat episode...', '🎬', 60);
     
     const episodes = [];
     for (let i = 1; i <= settings.episodes; i++) {
       toast(`🔄 Episode ${i}/${settings.episodes}...`, '🎬', 20);
       
-      const ep = generateEpisodeDetailedIndonesian(i, settings.episodes, synopsis, characters, basicInfo);
+      const ep = generateEpisodeIndonesian(i, settings.episodes, synopsis, characters, basicInfo);
       episodes.push(ep);
       
-      Utilities.sleep(2000);
+      Utilities.sleep(1500);
     }
     
     stats.eps = episodes.length;
     
-    Utilities.sleep(2000);
+    Utilities.sleep(1500);
     
-    // ========== BATCH 5: Generate Scenes with DETAILED Prompts ==========
-    toast('🔄 Batch 5/6: Membuat scene & prompts detail...', '🎬', 120);
+    // ========== BATCH 5: Generate Scenes with Acts ==========
+    toast('🔄 Batch 5/6: Membuat scene & act...', '🎬', 120);
     
     for (let i = 0; i < episodes.length; i++) {
       const ep = episodes[i];
@@ -120,22 +121,25 @@ function generateAll() {
       for (let j = 1; j <= settings.scenesPerEp; j++) {
         toast(`🔄 Episode ${i+1}, Scene ${j}/${settings.scenesPerEp}...`, '🎬', 20);
         
-        const scene = generateSceneWithDetailedPrompts(ep, j, settings.scenesPerEp, characters, basicInfo);
+        const scene = generateSceneWithActs(ep, j, settings.scenesPerEp, characters, basicInfo);
         ep.scenes.push(scene);
         stats.scenes++;
         stats.acts += 4;
-        stats.prompts += 8; // 4 image + 4 video prompts
+        stats.prompts += 12; // 3 prompts x 4 acts
         
-        Utilities.sleep(2500);
+        Utilities.sleep(2000);
       }
     }
     
-    // Write to Story sheet (with prompts!)
-    writeEpisodesWithPrompts(episodes);
+    // Write to Story sheet with prompts
+    writeStoryWithPrompts(episodes, characters, basicInfo);
     
     // ========== BATCH 6: Write Assets ==========
     toast('🔄 Batch 6/6: Menyimpan assets...', '🎬', 30);
-    writeAssetsFromEpisodes(episodes, characters, basicInfo.style);
+    writeAssetsWithAllPrompts(episodes, characters, basicInfo);
+    
+    // Update Overview
+    updateOverview(episodes);
     
     const duration = Math.round((new Date() - startTime) / 1000);
     
@@ -148,30 +152,18 @@ function generateAll() {
 }
 
 /**
- * BATCH 1: Analyze basic info - Indonesian output with context
+ * BATCH 1: Analyze basic info
  */
 function analyzeBasicInfoIndonesian(synopsis) {
   const shortSynopsis = synopsis.substring(0, 500);
   
-  const prompt = `Analisis cerita berikut dengan cermat:
+  const prompt = `Analisis cerita berikut:
 
 "${shortSynopsis}"
 
-Tentukan:
-1. Genre yang paling cocok
-2. Style visual yang sesuai
-3. Judul project dalam Bahasa Indonesia (2-5 kata, menarik)
-4. Setting utama (lokasi cerita)
-5. Tema utama cerita
-
+Tentukan genre, style visual, dan judul project.
 Jawab dalam JSON saja:
-{
-"genre":"Drama",
-"style":"Cinematic",
-"projectName":"Judul Menarik",
-"setting":"Pesantren di Ciamis",
-"theme":"Perjalanan spiritual santri"
-}
+{"genre":"Drama","style":"Cinematic","projectName":"Judul 2-4 Kata","setting":"Lokasi utama","theme":"Tema cerita"}
 
 Pilihan genre: Drama, Action, Comedy, Horror, Romance, Thriller, Documentary
 Pilihan style: Cinematic, Anime, Realistic, Cartoon`;
@@ -185,7 +177,6 @@ Pilihan style: Cinematic, Anime, Realistic, Cartoon`;
     }
   }
   
-  // Smart fallback based on synopsis content
   return detectContextFromSynopsis(synopsis);
 }
 
@@ -200,7 +191,7 @@ function detectContextFromSynopsis(synopsis) {
       genre: 'Documentary',
       style: 'Cinematic',
       projectName: 'Jejak Santri',
-      setting: 'Pondok Pesantren',
+      setting: 'Pesantren',
       theme: 'Perjalanan spiritual'
     };
   } else if (lower.includes('cinta') || lower.includes('jatuh cinta')) {
@@ -210,14 +201,6 @@ function detectContextFromSynopsis(synopsis) {
       projectName: 'Kisah Cinta',
       setting: 'Indonesia',
       theme: 'Percintaan'
-    };
-  } else if (lower.includes('misteri') || lower.includes('hantu')) {
-    return {
-      genre: 'Horror',
-      style: 'Cinematic',
-      projectName: 'Misteri Malam',
-      setting: 'Indonesia',
-      theme: 'Misteri'
     };
   }
   
@@ -231,35 +214,23 @@ function detectContextFromSynopsis(synopsis) {
 }
 
 /**
- * BATCH 2: Extract SMART characters - understands context!
+ * BATCH 2: Extract SMART characters
  */
 function extractSmartCharacters(synopsis, basicInfo) {
   const shortSynopsis = synopsis.substring(0, 800);
-  const setting = basicInfo.setting || '';
-  const theme = basicInfo.theme || '';
   
-  const prompt = `Baca cerita ini dengan SANGAT CERMAT:
-
+  const prompt = `Baca cerita ini:
 "${shortSynopsis}"
 
-Setting: ${setting}
-Tema: ${theme}
+Identifikasi KARAKTER (ORANG) dalam cerita.
 
-TUGAS: Identifikasi KARAKTER (ORANG) dalam cerita ini.
+ATURAN:
+1. Karakter = ORANG yang berperan
+2. BUKAN lokasi (Ciamis, Pesantren = BUKAN karakter!)
+3. Jika "santri" tanpa nama → buat nama: "Ahmad"
+4. Jika "kyai" tanpa nama → buat nama: "Kyai Hasan"
 
-ATURAN PENTING:
-1. Karakter = ORANG/MANUSIA yang berperan dalam cerita
-2. BUKAN lokasi (Ciamis, Jawa, Pesantren = BUKAN karakter!)
-3. BUKAN institusi (Pondok Darussalam = BUKAN karakter!)
-4. Jika cerita menyebut "santri" tanpa nama, buat nama: "Ahmad" atau "Santri Ahmad"
-5. Jika cerita menyebut "kyai" tanpa nama, buat nama: "Kyai Hasan"
-6. Jika cerita menyebut "ustadz", buat nama: "Ustadz Mahmud"
-7. Jika cerita menyebut "orang tua", buat nama: "Pak Hadi" dan "Bu Siti"
-
-Contoh BENAR: Ahmad, Siti, Kyai Hasan, Ustadz Mahmud, Bu Nyai, Pak Hadi
-Contoh SALAH: Pondok, Pesantren, Darussalam, Ciamis, Jawa, Indonesia
-
-Berikan 4-6 nama karakter yang MASUK AKAL untuk cerita ini.
+Berikan 4-5 nama karakter.
 Jawab dalam JSON array saja:
 ["Nama 1", "Nama 2", "Nama 3", "Nama 4"]`;
 
@@ -268,49 +239,33 @@ Jawab dalam JSON array saja:
   if (response.success) {
     const parsed = parseJSON(response.data);
     if (parsed && Array.isArray(parsed) && parsed.length > 0) {
-      // Double filter - remove any location names that slipped through
       const filtered = parsed.filter(name => !isDefinitelyLocation(name));
       if (filtered.length >= 2) {
-        return filtered.slice(0, 6);
+        return filtered.slice(0, 5);
       }
     }
   }
   
-  // Smart fallback based on context
   return createSmartCharacterNames(synopsis, basicInfo);
 }
 
 /**
- * Check if name is DEFINITELY a location (strict check)
+ * Check if name is a location
  */
 function isDefinitelyLocation(name) {
   if (!name || typeof name !== 'string') return true;
   
   const nameLower = name.toLowerCase().trim();
-  
-  // Exact matches - definitely locations
-  const exactLocations = [
+  const locations = [
     'pondok', 'pesantren', 'darussalam', 'ciamis', 'jawa', 'barat', 'timur',
-    'utara', 'selatan', 'jakarta', 'bandung', 'surabaya', 'indonesia',
-    'masjid', 'sekolah', 'universitas', 'kampus', 'desa', 'kota', 'kabupaten',
-    'provinsi', 'kecamatan', 'kelurahan', 'aula', 'gedung', 'ruang'
+    'jakarta', 'bandung', 'surabaya', 'indonesia', 'masjid', 'sekolah'
   ];
   
-  for (const loc of exactLocations) {
-    if (nameLower === loc || nameLower.startsWith(loc + ' ') || nameLower.endsWith(' ' + loc)) {
+  for (const loc of locations) {
+    if (nameLower === loc || nameLower.includes('pondok pesantren')) {
       return true;
     }
   }
-  
-  // If name is just one word and matches location keyword
-  if (!nameLower.includes(' ')) {
-    for (const loc of exactLocations) {
-      if (nameLower === loc) return true;
-    }
-  }
-  
-  // Names with "Pondok Pesantren" pattern
-  if (nameLower.includes('pondok pesantren')) return true;
   
   return false;
 }
@@ -320,94 +275,35 @@ function isDefinitelyLocation(name) {
  */
 function createSmartCharacterNames(synopsis, basicInfo) {
   const lower = synopsis.toLowerCase();
-  const setting = (basicInfo.setting || '').toLowerCase();
   
-  // Pesantren/Islamic context
-  if (lower.includes('santri') || lower.includes('pesantren') || lower.includes('kyai') || setting.includes('pesantren')) {
-    return [
-      'Ahmad Fauzi',      // Santri utama
-      'Siti Aisyah',      // Santriwati
-      'Kyai Hasan',       // Pengasuh pesantren
-      'Ustadz Mahmud',    // Guru ngaji
-      'Bu Nyai Fatimah',  // Istri kyai
-      'Pak Hadi'          // Orang tua santri
-    ];
+  if (lower.includes('santri') || lower.includes('pesantren')) {
+    return ['Ahmad Fauzi', 'Siti Aisyah', 'Kyai Hasan', 'Ustadz Mahmud', 'Bu Nyai Fatimah'];
+  } else if (lower.includes('sekolah') || lower.includes('siswa')) {
+    return ['Budi Santoso', 'Ani Wijaya', 'Pak Hendra', 'Bu Sari'];
   }
   
-  // School context
-  if (lower.includes('sekolah') || lower.includes('siswa') || lower.includes('guru')) {
-    return [
-      'Budi Santoso',
-      'Ani Wijaya',
-      'Pak Guru Hendra',
-      'Bu Guru Sari',
-      'Doni Pratama'
-    ];
-  }
-  
-  // Office/work context
-  if (lower.includes('kantor') || lower.includes('kerja') || lower.includes('perusahaan')) {
-    return [
-      'Andi Pratama',
-      'Dewi Lestari',
-      'Pak Bambang',
-      'Bu Rina',
-      'Dimas Wijaya'
-    ];
-  }
-  
-  // Family context
-  if (lower.includes('keluarga') || lower.includes('ayah') || lower.includes('ibu')) {
-    return [
-      'Pak Hadi',
-      'Bu Siti',
-      'Andi',
-      'Sari',
-      'Nenek Aminah'
-    ];
-  }
-  
-  // Default Indonesian names
-  return [
-    'Andi Pratama',
-    'Sari Dewi',
-    'Budi Santoso',
-    'Ani Wijaya'
-  ];
+  return ['Andi Pratama', 'Sari Dewi', 'Budi Santoso', 'Ani Wijaya'];
 }
 
 /**
- * BATCH 3: Get character detail - VERY DETAILED for AI image generation
+ * BATCH 3: Get character detail
  */
 function getCharacterDetailSmart(name, synopsis, index, basicInfo) {
-  const shortSynopsis = synopsis.substring(0, 400);
-  const roles = ['Protagonist', 'Supporting', 'Supporting', 'Supporting', 'Minor', 'Minor'];
+  const shortSynopsis = synopsis.substring(0, 300);
+  const roles = ['Protagonist', 'Supporting', 'Supporting', 'Supporting', 'Minor'];
   const defaultRole = roles[index] || 'Supporting';
-  const setting = basicInfo.setting || '';
   
-  const prompt = `Karakter "${name}" dalam cerita:
-"${shortSynopsis}"
+  const prompt = `Karakter "${name}" dalam cerita: "${shortSynopsis}"
 
-Setting: ${setting}
-
-Buat deskripsi SANGAT DETAIL untuk karakter ini agar AI image generator bisa membuat gambar yang KONSISTEN.
-
-PENTING - Deskripsi appearance harus mencakup:
-- Warna kulit (sawo matang/kuning langsat/putih/coklat)
-- Warna dan gaya rambut (hitam pendek rapi/hitam panjang lurus/berjilbab putih/dll)
-- Bentuk wajah (oval/bulat/persegi/lonjong)
-- Ciri khas (berkacamata/berjenggot/berkumis/berpeci/dll)
-- Pakaian khas (jubah putih/baju koko/gamis/seragam/dll)
-- Usia terlihat (muda/paruh baya/tua)
-
+Buat deskripsi untuk AI image generator.
 Jawab dalam JSON saja:
 {
 "name":"${name}",
 "role":"${defaultRole}",
-"age":"usia dalam angka",
-"gender":"Male atau Female",
-"appearance":"DESKRIPSI SANGAT DETAIL 50-80 kata tentang penampilan fisik",
-"personality":"sifat-sifat utama karakter dalam Bahasa Indonesia"
+"age":"usia",
+"gender":"Pria atau Wanita",
+"appearance":"Deskripsi fisik 30-50 kata: kulit, rambut, wajah, pakaian khas",
+"personality":"sifat utama"
 }`;
 
   const response = generateText(prompt);
@@ -417,153 +313,102 @@ Jawab dalam JSON saja:
     if (parsed && parsed.name) {
       parsed.role = validateRole(parsed.role || defaultRole);
       parsed.gender = validateGender(parsed.gender);
-      // Ensure appearance is detailed enough
-      if (!parsed.appearance || parsed.appearance.length < 30) {
+      if (!parsed.appearance || parsed.appearance.length < 20) {
         parsed.appearance = createDetailedAppearance(name, parsed.gender, parsed.age, basicInfo);
       }
       return parsed;
     }
   }
   
-  // Smart fallback with detailed appearance
   return createSmartCharacterFallback(name, index, basicInfo);
 }
 
 /**
- * Create detailed appearance description
+ * Create detailed appearance
  */
 function createDetailedAppearance(name, gender, age, basicInfo) {
   const setting = (basicInfo.setting || '').toLowerCase();
-  const ageNum = parseInt(age) || 25;
+  const nameLower = name.toLowerCase();
   
-  // Pesantren context
-  if (setting.includes('pesantren') || name.toLowerCase().includes('kyai') || name.toLowerCase().includes('ustadz')) {
-    if (gender === 'Female') {
-      return 'Wanita Indonesia berkulit sawo matang, wajah oval teduh, mengenakan jilbab putih bersih yang menutupi rambut, gamis panjang warna pastel, ekspresi wajah lembut dan bijaksana, mata hitam yang hangat, senyum ramah';
-    } else if (name.toLowerCase().includes('kyai') || ageNum > 50) {
-      return 'Pria Indonesia paruh baya berkulit sawo matang, wajah bijaksana dengan jenggot putih lebat, mengenakan peci hitam dan jubah putih bersih, sorban di pundak, mata teduh penuh kebijaksanaan, postur tegap berwibawa';
-    } else if (name.toLowerCase().includes('ustadz')) {
-      return 'Pria Indonesia dewasa berkulit sawo matang, wajah ramah dengan jenggot hitam rapi, mengenakan peci putih dan baju koko putih bersih, sarung batik, mata hangat, senyum bijaksana';
+  if (setting.includes('pesantren') || nameLower.includes('kyai') || nameLower.includes('ustadz')) {
+    if (gender === 'Wanita') {
+      return 'Wanita Indonesia, kulit sawo matang, jilbab putih, gamis pastel, wajah lembut, mata hangat';
+    } else if (nameLower.includes('kyai')) {
+      return 'Pria paruh baya, kulit sawo matang, jenggot putih, peci hitam, jubah putih, wibawa';
     } else {
-      return 'Pemuda Indonesia berkulit sawo matang, rambut hitam pendek rapi, wajah bersih dan cerah, mengenakan peci putih dan baju koko putih, sarung hijau, ekspresi wajah polos dan penuh semangat, postur tubuh sedang';
+      return 'Pemuda Indonesia, kulit sawo matang, rambut hitam pendek, peci putih, baju koko putih, sarung';
     }
   }
   
-  // Default Indonesian appearance
-  if (gender === 'Female') {
-    return 'Wanita Indonesia muda berkulit kuning langsat, rambut hitam panjang lurus, wajah oval dengan mata hitam berbinar, hidung mancung, bibir tipis, mengenakan pakaian sopan warna cerah, ekspresi ramah dan ceria';
-  } else {
-    return 'Pria Indonesia muda berkulit sawo matang, rambut hitam pendek rapi, wajah persegi dengan rahang tegas, mata hitam tajam, alis tebal, mengenakan kemeja rapi, postur tubuh atletis sedang, ekspresi percaya diri';
+  if (gender === 'Wanita') {
+    return 'Wanita Indonesia muda, kulit kuning langsat, rambut hitam panjang, wajah oval, pakaian sopan';
   }
+  return 'Pria Indonesia muda, kulit sawo matang, rambut hitam pendek, wajah tegas, kemeja rapi';
 }
 
 /**
- * Create smart character fallback with full details
+ * Create character fallback
  */
 function createSmartCharacterFallback(name, index, basicInfo) {
-  const setting = (basicInfo.setting || '').toLowerCase();
   const nameLower = name.toLowerCase();
   
-  // Determine gender from name
-  let gender = 'Male';
-  if (nameLower.includes('siti') || nameLower.includes('aisyah') || nameLower.includes('fatimah') || 
-      nameLower.includes('ani') || nameLower.includes('dewi') || nameLower.includes('sari') ||
-      nameLower.includes('bu ') || nameLower.includes('nyai')) {
-    gender = 'Female';
+  let gender = 'Pria';
+  if (nameLower.includes('siti') || nameLower.includes('aisyah') || nameLower.includes('bu ') || nameLower.includes('nyai')) {
+    gender = 'Wanita';
   }
   
-  // Determine age from name/role
   let age = '22';
   if (nameLower.includes('kyai') || nameLower.includes('pak ') || nameLower.includes('bu ')) {
-    age = '55';
-  } else if (nameLower.includes('ustadz') || nameLower.includes('ustadzah')) {
-    age = '35';
+    age = '50';
   }
-  
-  // Determine role
-  let role = 'Supporting';
-  if (index === 0) role = 'Protagonist';
-  if (nameLower.includes('kyai')) role = 'Supporting';
   
   return {
     name: name,
-    role: role,
+    role: index === 0 ? 'Protagonist' : 'Supporting',
     age: age,
     gender: gender,
     appearance: createDetailedAppearance(name, gender, age, basicInfo),
-    personality: 'Baik hati, sopan, bertanggung jawab, dan penuh semangat'
+    personality: 'Baik hati, sopan, bertanggung jawab'
   };
 }
 
 /**
- * Validate role for dropdown
+ * Validate role
  */
 function validateRole(role) {
   const validRoles = ['Protagonist', 'Antagonist', 'Supporting', 'Minor'];
-  const roleLower = (role || '').toLowerCase();
-  
-  if (roleLower.includes('protag') || roleLower.includes('utama')) return 'Protagonist';
-  if (roleLower.includes('antag') || roleLower.includes('jahat')) return 'Antagonist';
-  if (roleLower.includes('minor') || roleLower.includes('kecil')) return 'Minor';
   if (validRoles.includes(role)) return role;
   return 'Supporting';
 }
 
 /**
- * Validate gender for dropdown
+ * Validate gender
  */
 function validateGender(gender) {
   const genderLower = (gender || '').toLowerCase();
-  if (genderLower.includes('female') || genderLower.includes('perempuan') || genderLower.includes('wanita')) return 'Female';
-  if (genderLower.includes('non')) return 'Non-binary';
-  return 'Male';
+  if (genderLower.includes('female') || genderLower.includes('perempuan') || genderLower.includes('wanita')) return 'Wanita';
+  return 'Pria';
 }
 
 /**
- * BATCH 4: Generate episode - Indonesian, VERY detailed
+ * BATCH 4: Generate episode - ringkasan alur
  */
-function generateEpisodeDetailedIndonesian(epNumber, totalEps, synopsis, characters, basicInfo) {
+function generateEpisodeIndonesian(epNumber, totalEps, synopsis, characters, basicInfo) {
   const charNames = characters.slice(0, 3).map(c => c.name).join(', ');
   const shortSynopsis = synopsis.substring(0, 400);
-  const setting = basicInfo.setting || '';
-  const theme = basicInfo.theme || '';
   
-  // Determine episode focus based on position
-  let episodeFocus = '';
-  if (totalEps === 1) {
-    episodeFocus = 'Cerita lengkap dari awal hingga akhir';
-  } else if (epNumber === 1) {
-    episodeFocus = 'Perkenalan karakter dan setting, awal konflik';
-  } else if (epNumber === totalEps) {
-    episodeFocus = 'Klimaks dan resolusi cerita';
-  } else if (epNumber <= totalEps / 2) {
-    episodeFocus = 'Pengembangan konflik dan karakter';
-  } else {
-    episodeFocus = 'Menuju klimaks, ketegangan meningkat';
-  }
+  let focus = '';
+  if (epNumber === 1) focus = 'Perkenalan karakter dan setting';
+  else if (epNumber === totalEps) focus = 'Klimaks dan resolusi';
+  else focus = 'Pengembangan konflik';
   
   const prompt = `Cerita: "${shortSynopsis}"
-
-Setting: ${setting}
-Tema: ${theme}
 Karakter: ${charNames}
+Episode ${epNumber} dari ${totalEps}. Fokus: ${focus}
 
-Buat Episode ${epNumber} dari ${totalEps} episode.
-Fokus episode ini: ${episodeFocus}
-
-Buat judul dan ringkasan dalam Bahasa Indonesia yang SANGAT DETAIL.
-Ringkasan harus 3-4 kalimat, menjelaskan:
-- Apa yang terjadi di episode ini
-- Karakter mana yang terlibat
-- Konflik atau momen penting
-- Bagaimana episode berakhir
-
-Jawab dalam JSON saja:
-{
-"number":${epNumber},
-"title":"Judul Episode dalam Bahasa Indonesia (menarik dan deskriptif)",
-"summary":"Ringkasan SANGAT DETAIL 3-4 kalimat"
-}`;
+Buat judul dan RINGKASAN ALUR episode (2-3 kalimat).
+Jawab dalam JSON:
+{"number":${epNumber},"title":"Judul Episode","summary":"Ringkasan alur episode ini"}`;
 
   const response = generateText(prompt);
   
@@ -575,97 +420,40 @@ Jawab dalam JSON saja:
     }
   }
   
-  // Smart fallback based on episode position
-  return createEpisodeFallback(epNumber, totalEps, characters, basicInfo);
-}
-
-/**
- * Create episode fallback with context
- */
-function createEpisodeFallback(epNumber, totalEps, characters, basicInfo) {
-  const setting = (basicInfo.setting || '').toLowerCase();
-  const charName = characters[0]?.name || 'Karakter Utama';
-  
-  // Pesantren context
-  if (setting.includes('pesantren')) {
-    const titles = [
-      'Langkah Pertama di Gerbang Pesantren',
-      'Hari-Hari Penuh Perjuangan',
-      'Ujian yang Menguatkan',
-      'Wisuda Penuh Haru'
-    ];
-    const summaries = [
-      `${charName} pertama kali menginjakkan kaki di pesantren dengan perasaan campur aduk. Suasana baru, teman-teman baru, dan rutinitas yang berbeda dari rumah. Episode ini menampilkan adaptasi awal dan perkenalan dengan kehidupan pesantren.`,
-      `Keseharian di pesantren mulai terasa: bangun subuh, sholat berjamaah, mengaji, dan belajar kitab kuning. ${charName} menghadapi berbagai tantangan namun mulai menemukan makna dalam setiap kegiatan.`,
-      `Ujian besar menanti para santri. ${charName} harus membuktikan hasil belajarnya selama ini. Momen-momen tegang bercampur dengan dukungan dari teman-teman dan para ustadz.`,
-      `Hari wisuda yang dinanti tiba. ${charName} dan teman-teman menerima ijazah dengan penuh haru. Air mata kebahagiaan mengalir, kenangan indah terukir untuk selamanya.`
-    ];
-    
-    return {
-      number: epNumber,
-      title: titles[Math.min(epNumber - 1, titles.length - 1)] || 'Episode ' + epNumber,
-      summary: summaries[Math.min(epNumber - 1, summaries.length - 1)] || 'Episode ' + epNumber + ' dari cerita ini.'
-    };
-  }
-  
-  // Default fallback
-  const defaultTitles = ['Awal Perjalanan', 'Tantangan Pertama', 'Konflik Memuncak', 'Titik Balik', 'Klimaks', 'Resolusi'];
   return {
     number: epNumber,
-    title: defaultTitles[Math.min(epNumber - 1, defaultTitles.length - 1)] || 'Episode ' + epNumber,
-    summary: `Episode ${epNumber} menampilkan perkembangan cerita ${charName}. Berbagai peristiwa penting terjadi yang membawa cerita ke tahap selanjutnya.`
+    title: epNumber === 1 ? 'Awal Perjalanan' : (epNumber === totalEps ? 'Akhir Cerita' : 'Perjalanan Berlanjut'),
+    summary: `Episode ${epNumber} menampilkan perkembangan cerita ${characters[0]?.name || 'karakter utama'}.`
   };
 }
 
 /**
- * BATCH 5: Generate scene with VERY DETAILED Prompts - Indonesian
+ * BATCH 5: Generate scene with acts
  */
-function generateSceneWithDetailedPrompts(episode, sceneNumber, totalScenes, characters, basicInfo) {
+function generateSceneWithActs(episode, sceneNumber, totalScenes, characters, basicInfo) {
   const charName = characters[0]?.name || 'Karakter Utama';
-  const charAppearance = characters[0]?.appearance || 'kulit sawo matang, rambut hitam';
-  const setting = basicInfo.setting || '';
-  const style = basicInfo.style || 'Cinematic';
-  
-  // Determine scene position and focus
-  let sceneFocus = '';
-  if (sceneNumber === 1) {
-    sceneFocus = 'Opening scene - perkenalan setting dan suasana';
-  } else if (sceneNumber === totalScenes) {
-    sceneFocus = 'Closing scene - resolusi dan penutup episode';
-  } else if (sceneNumber <= totalScenes / 2) {
-    sceneFocus = 'Development - pengembangan cerita';
-  } else {
-    sceneFocus = 'Rising action - menuju klimaks';
-  }
+  const setting = basicInfo.setting || 'Indonesia';
   
   const prompt = `Episode: "${episode.title}"
-Scene ${sceneNumber} dari ${totalScenes}.
-Fokus: ${sceneFocus}
+Scene ${sceneNumber} dari ${totalScenes}
 Setting: ${setting}
-Karakter utama: ${charName}
+Karakter: ${charName}
 
-Buat scene dengan 4 act yang SANGAT DETAIL dalam Bahasa Indonesia.
+Buat scene dengan 4 act. Setiap act berisi ADEGAN + DIALOG/NARASI.
 
-PENTING - Setiap act description harus:
-- Minimal 2-3 kalimat PANJANG
-- Menjelaskan VISUAL dengan detail (apa yang terlihat di layar)
-- Menjelaskan AKSI karakter (apa yang dilakukan)
-- Menjelaskan EMOSI/SUASANA (bagaimana perasaan/atmosfer)
-- Cocok untuk dijadikan prompt AI image/video generator
-
-Jawab dalam JSON saja:
+Jawab dalam JSON:
 {
 "number":${sceneNumber},
-"title":"Judul Scene dalam Bahasa Indonesia",
-"location":"Lokasi SPESIFIK dan DETAIL (contoh: Halaman depan pesantren dengan pohon beringin besar, pagar putih, dan jalan setapak berbatu)",
-"timeOfDay":"Morning/Afternoon/Evening/Night",
+"title":"Judul Scene Singkat",
+"location":"Lokasi singkat (max 5 kata)",
+"time":"Pagi/Siang/Sore/Malam",
 "characters":["${charName}"],
-"costumeNote":"Pakaian yang dikenakan karakter di scene ini",
+"costume":"Pakaian singkat (max 5 kata)",
 "acts":[
-{"act":"A","description":"DESKRIPSI SANGAT DETAIL 3-4 kalimat untuk ESTABLISHING SHOT. Jelaskan pemandangan luas, suasana lokasi, posisi karakter dari jauh, cuaca, pencahayaan, dan atmosfer keseluruhan.","shotType":"Wide","mood":"suasana emosional"},
-{"act":"B","description":"DESKRIPSI SANGAT DETAIL 3-4 kalimat untuk DEVELOPMENT. Jelaskan karakter mulai beraksi, ekspresi wajah, gerakan tubuh, interaksi dengan lingkungan, detail pakaian yang terlihat.","shotType":"Medium","mood":"suasana"},
-{"act":"C","description":"DESKRIPSI SANGAT DETAIL 3-4 kalimat untuk KLIMAKS SCENE. Momen paling intens/emosional, close-up wajah, detail ekspresi mata, air mata jika ada, gesture tangan, momen yang memorable.","shotType":"Close-up","mood":"suasana"},
-{"act":"D","description":"DESKRIPSI SANGAT DETAIL 3-4 kalimat untuk RESOLUSI. Bagaimana scene berakhir, transisi ke scene berikutnya, karakter bergerak keluar frame atau perubahan suasana.","shotType":"Medium","mood":"suasana"}
+{"act":"A","description":"Adegan pembuka + narasi/dialog","shot":"Wide"},
+{"act":"B","description":"Adegan pengembangan + dialog","shot":"Medium"},
+{"act":"C","description":"Adegan klimaks + dialog emosional","shot":"Close-up"},
+{"act":"D","description":"Adegan penutup + narasi","shot":"Medium"}
 ]
 }`;
 
@@ -675,313 +463,177 @@ Jawab dalam JSON saja:
     const parsed = parseJSON(response.data);
     if (parsed && parsed.acts && parsed.acts.length >= 4) {
       parsed.number = sceneNumber;
-      
-      // Generate DETAILED prompts for each act
-      parsed.acts.forEach((act, i) => {
-        act.imagePrompt = buildDetailedImagePrompt(act, parsed, characters, style);
-        act.videoPrompt = buildDetailedVideoPrompt(act, parsed, characters);
-      });
-      
       return parsed;
     }
   }
   
-  // Fallback with detailed prompts
-  return createDetailedFallbackScene(episode, sceneNumber, characters, basicInfo);
+  return createFallbackScene(episode, sceneNumber, characters, basicInfo);
 }
 
 /**
- * Build VERY DETAILED image prompt from act
+ * Create fallback scene
  */
-function buildDetailedImagePrompt(act, scene, characters, style) {
-  const parts = [];
-  
-  // 1. Shot type with detail
-  const shotDetails = {
-    'Wide': 'Cinematic wide establishing shot, full environment visible, characters small in frame',
-    'Medium': 'Medium shot framing character from waist up, balanced composition',
-    'Close-up': 'Intimate close-up shot focusing on face and expression, shallow depth of field',
-    'Extreme Close-up': 'Extreme close-up macro shot, intense detail on eyes or specific feature'
-  };
-  parts.push(shotDetails[act.shotType] || 'Medium shot');
-  
-  // 2. Characters with FULL appearance
-  if (scene.characters && scene.characters.length > 0) {
-    scene.characters.forEach(charName => {
-      const char = characters.find(c => c.name === charName);
-      if (char && char.appearance) {
-        parts.push(`${char.name}: ${char.appearance}`);
-        
-        // Add costume if specified
-        if (scene.costumeNote) {
-          parts.push(`wearing ${scene.costumeNote}`);
-        }
-      }
-    });
-  }
-  
-  // 3. Location with atmosphere
-  if (scene.location) {
-    parts.push(`Location: ${scene.location}`);
-  }
-  
-  // 4. Action/Description (the main content)
-  if (act.description) {
-    parts.push(`Scene: ${act.description}`);
-  }
-  
-  // 5. Time of day with lighting details
-  const lightingDetails = {
-    'Morning': 'Golden hour morning light, soft warm sunbeams, gentle shadows, peaceful atmosphere',
-    'Afternoon': 'Bright natural daylight, clear visibility, vibrant colors, energetic mood',
-    'Evening': 'Warm sunset golden hour, orange and pink sky, long dramatic shadows, nostalgic feeling',
-    'Night': 'Night scene with dramatic moonlight, deep shadows, mysterious atmosphere, cool blue tones'
-  };
-  parts.push(lightingDetails[scene.timeOfDay] || 'Natural lighting');
-  
-  // 6. Mood/Atmosphere
-  if (act.mood) {
-    parts.push(`Mood: ${act.mood}, emotional atmosphere`);
-  }
-  
-  // 7. Style with technical details
-  const styleDetails = {
-    'Cinematic': 'Cinematic film look, 35mm film grain, shallow depth of field, professional color grading, anamorphic lens flare, movie quality production',
-    'Anime': 'High quality anime style, vibrant saturated colors, detailed cel shading, expressive eyes, dynamic composition, Studio Ghibli inspired',
-    'Realistic': 'Photorealistic rendering, 8K ultra HD quality, natural skin texture, accurate lighting, lifelike details, professional photography',
-    'Cartoon': 'Stylized cartoon aesthetic, bold outlines, bright cheerful colors, exaggerated expressions, family-friendly animation style'
-  };
-  parts.push(styleDetails[style] || styleDetails['Cinematic']);
-  
-  // 8. Technical quality tags
-  parts.push('masterpiece, best quality, highly detailed, sharp focus');
-  
-  return parts.join('. ') + '.';
-}
-
-/**
- * Build VERY DETAILED video prompt from act
- */
-function buildDetailedVideoPrompt(act, scene, characters) {
-  const parts = [];
-  
-  // 1. Shot type
-  parts.push(`${act.shotType} shot`);
-  
-  // 2. Subject
-  if (scene.characters && scene.characters.length > 0) {
-    const charDescs = scene.characters.slice(0, 2).map(charName => {
-      const char = characters.find(c => c.name === charName);
-      if (char) {
-        return `${char.name} (${char.appearance?.substring(0, 50) || 'Indonesian person'})`;
-      }
-      return charName;
-    });
-    parts.push(`featuring ${charDescs.join(' and ')}`);
-  }
-  
-  // 3. Location
-  if (scene.location) {
-    parts.push(`in ${scene.location}`);
-  }
-  
-  // 4. Action (main content)
-  if (act.description) {
-    parts.push(act.description);
-  }
-  
-  // 5. Camera movement based on act
-  const cameraMovements = {
-    'A': 'Camera slowly pushes in from wide to establish the scene, smooth dolly movement',
-    'B': 'Camera tracks alongside character movement, steady follow shot',
-    'C': 'Camera holds steady on emotional moment, subtle breathing movement',
-    'D': 'Camera slowly pulls back to close the scene, graceful retreat'
-  };
-  parts.push(cameraMovements[act.act] || 'Smooth camera movement');
-  
-  // 6. Lighting
-  const time = scene.timeOfDay || 'Day';
-  parts.push(`${time.toLowerCase()} lighting conditions`);
-  
-  // 7. Duration and quality
-  parts.push('Duration: 8 seconds');
-  parts.push('Cinematic quality, smooth 24fps motion, professional production value, no artifacts');
-  
-  return parts.join('. ') + '.';
-}
-
-/**
- * Create detailed fallback scene with prompts
- */
-function createDetailedFallbackScene(episode, sceneNumber, characters, basicInfo) {
+function createFallbackScene(episode, sceneNumber, characters, basicInfo) {
   const charName = characters[0]?.name || 'Karakter';
-  const charAppearance = characters[0]?.appearance || 'kulit sawo matang, rambut hitam pendek rapi';
   const setting = (basicInfo.setting || '').toLowerCase();
-  const style = basicInfo.style || 'Cinematic';
   
-  // Context-aware locations
-  let locations, costumeNote;
+  let location = 'Halaman utama';
+  let costume = 'Pakaian sehari-hari';
+  
   if (setting.includes('pesantren')) {
-    locations = [
-      'Gerbang utama pesantren dengan arsitektur tradisional Jawa, pagar putih tinggi, pohon beringin rindang di samping',
-      'Aula utama pesantren dengan lantai marmer, jendela besar, kaligrafi Arab di dinding',
-      'Halaman pesantren yang luas dengan rumput hijau, santri-santri berlalu lalang',
-      'Masjid pesantren dengan kubah hijau, menara tinggi, suasana khusyuk',
-      'Asrama santri dengan tempat tidur tingkat, lemari kayu, jendela terbuka'
-    ];
-    costumeNote = 'Baju koko putih bersih, peci putih, sarung hijau';
-  } else {
-    locations = [
-      'Ruang tamu rumah Indonesia dengan sofa batik, foto keluarga di dinding',
-      'Taman kota dengan bangku kayu, pohon rindang, lampu taman',
-      'Jalan kampung dengan rumah-rumah tradisional, anak-anak bermain',
-      'Kantor modern dengan meja kerja, komputer, tanaman hias'
-    ];
-    costumeNote = 'Pakaian kasual rapi';
+    location = 'Halaman pesantren';
+    costume = 'Baju koko putih, peci';
   }
   
-  const location = locations[(sceneNumber - 1) % locations.length];
-  const times = ['Morning', 'Morning', 'Afternoon', 'Evening', 'Night'];
-  const timeOfDay = times[(sceneNumber - 1) % times.length];
+  const times = ['Pagi', 'Siang', 'Sore', 'Malam'];
   
-  const scene = {
+  return {
     number: sceneNumber,
-    title: `Scene ${sceneNumber}: ${episode.title}`,
+    title: `Scene ${sceneNumber}`,
     location: location,
-    timeOfDay: timeOfDay,
+    time: times[(sceneNumber - 1) % 4],
     characters: [charName],
-    costumeNote: costumeNote,
+    costume: costume,
     acts: [
-      {
-        act: 'A',
-        description: `Pemandangan luas ${location}. Cahaya ${timeOfDay === 'Morning' ? 'pagi yang lembut' : timeOfDay === 'Evening' ? 'senja keemasan' : 'alami'} menerangi seluruh area. ${charName} terlihat dari kejauhan, berdiri dengan postur tegak. Suasana tenang dan damai menyelimuti, angin sepoi-sepoi menggerakkan dedaunan. Burung-burung berkicau di kejauhan menambah kesan natural.`,
-        shotType: 'Wide',
-        mood: 'tenang dan damai'
-      },
-      {
-        act: 'B',
-        description: `${charName} mulai berjalan perlahan dengan langkah mantap. Wajahnya terlihat jelas - ${charAppearance}. Ekspresi wajahnya menunjukkan campuran harapan dan sedikit kegugupan. Tangannya bergerak natural di samping tubuh. Detail pakaiannya terlihat rapi dan bersih. Latar belakang sedikit blur mengarahkan fokus pada karakter.`,
-        shotType: 'Medium',
-        mood: 'penuh harapan'
-      },
-      {
-        act: 'C',
-        description: `Close-up wajah ${charName}. Matanya yang hitam berbinar penuh emosi, terlihat sedikit berkaca-kaca. Bibirnya sedikit bergetar menahan perasaan. Setiap detail wajahnya terlihat - kerutan halus di dahi menunjukkan konsentrasi, pipinya sedikit memerah. Ini adalah momen paling intens dan emosional dari scene ini. Pencahayaan dramatis memperkuat mood.`,
-        shotType: 'Close-up',
-        mood: 'emosional dan intens'
-      },
-      {
-        act: 'D',
-        description: `${charName} menarik napas dalam-dalam, kemudian mengangguk pelan dengan penuh keyakinan. Senyum tipis mulai terbentuk di wajahnya. Perlahan ia berbalik dan mulai berjalan menjauh dari kamera. Sosoknya semakin mengecil di frame. Scene berakhir dengan suasana penuh harapan untuk apa yang akan datang.`,
-        shotType: 'Medium',
-        mood: 'penuh harapan dan resolusi'
-      }
+      { act: 'A', description: `${charName} memasuki lokasi. Suasana tenang.`, shot: 'Wide' },
+      { act: 'B', description: `${charName} berjalan perlahan. "Aku harus kuat," batinnya.`, shot: 'Medium' },
+      { act: 'C', description: `Close-up wajah ${charName}. Air mata mengalir.`, shot: 'Close-up' },
+      { act: 'D', description: `${charName} mengangguk dan berjalan pergi.`, shot: 'Medium' }
     ]
   };
-  
-  // Add detailed prompts
-  scene.acts.forEach(act => {
-    act.imagePrompt = buildDetailedImagePrompt(act, scene, characters, style);
-    act.videoPrompt = buildDetailedVideoPrompt(act, scene, characters);
-  });
-  
-  return scene;
 }
 
+
 /**
- * Write assets from episodes to Assets sheet
+ * Write characters with prompts to sheet
  */
-function writeAssetsFromEpisodes(episodes, characters, style) {
-  let assetId = 1;
+function writeCharactersWithPrompts(characters, style) {
+  const sheet = getCharsSheet();
+  if (!sheet || !characters || characters.length === 0) return;
   
-  episodes.forEach(ep => {
-    if (ep.scenes) {
-      ep.scenes.forEach(scene => {
-        if (scene.acts) {
-          scene.acts.forEach((act, ai) => {
-            const actLetter = act.act || ['A','B','C','D'][ai];
-            
-            // Get seed from main character for consistency
-            const mainChar = characters.find(c => 
-              scene.characters && scene.characters.includes(c.name)
-            );
-            const seed = mainChar?.seed || getSeed(`${ep.number}-${scene.number}-${actLetter}`);
-            
-            // Generate preview image
-            let imageUrl = '';
-            try {
-              imageUrl = generateImage(act.imagePrompt || '', { seed: seed, width: 1280, height: 720 });
-            } catch (e) {
-              Logger.log('Image generation error: ' + e.message);
-            }
-            
-            addAsset({
-              id: assetId++,
-              scene: ep.number + '.' + scene.number,
-              act: actLetter,
-              description: act.description || '',
-              imagePrompt: act.imagePrompt || '',
-              videoPrompt: act.videoPrompt || '',
-              imageUrl: imageUrl,
-              status: imageUrl ? 'Generated' : 'Pending',
-              duration: '8s'
-            });
-          });
-        }
-      });
-    }
+  // Clear existing
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= CHARS.DATA_START_ROW) {
+    sheet.getRange(CHARS.DATA_START_ROW, 1, lastRow - CHARS.DATA_START_ROW + 1, 10).clear();
+  }
+  
+  characters.forEach((char, i) => {
+    const row = CHARS.DATA_START_ROW + i;
+    const seed = getSeed(char.name);
+    
+    // Build character prompt for AI tools
+    const charPrompt = buildCharacterPrompt(char, style, seed);
+    
+    sheet.getRange(row, 1).setValue(char.name || 'Character ' + (i+1));
+    sheet.getRange(row, 2).setValue(char.role || 'Supporting');
+    sheet.getRange(row, 3).setValue(char.age || '25');
+    sheet.getRange(row, 4).setValue(char.gender || 'Pria');
+    sheet.getRange(row, 5).setValue(char.appearance || '');
+    sheet.getRange(row, 6).setValue(seed);
+    sheet.getRange(row, 7).setValue(char.personality || '');
+    sheet.getRange(row, 9).setValue('Baru');
+    sheet.getRange(row, 10).setValue(charPrompt);  // Character prompt
+    
+    sheet.setRowHeight(row, 60);
   });
 }
 
 /**
- * Write episodes with prompts to Story sheet
+ * Build character reference prompt
  */
-function writeEpisodesWithPrompts(episodes) {
+function buildCharacterPrompt(char, style, seed) {
+  const parts = [];
+  
+  parts.push('Character reference sheet, full body, front view');
+  parts.push(char.name);
+  
+  if (char.appearance) {
+    parts.push(char.appearance);
+  }
+  
+  parts.push('white background, character design');
+  
+  // Style
+  const styleMap = {
+    'Cinematic': 'realistic, detailed, professional',
+    'Anime': 'anime style, vibrant colors',
+    'Realistic': 'photorealistic, 8K quality',
+    'Cartoon': 'cartoon style, bold colors'
+  };
+  parts.push(styleMap[style] || styleMap['Cinematic']);
+  
+  parts.push(`--seed ${seed}`);
+  
+  return parts.join(', ');
+}
+
+/**
+ * Write story with prompts to sheet
+ */
+function writeStoryWithPrompts(episodes, characters, basicInfo) {
   const sheet = getStorySheet();
   if (!sheet) return;
+  
+  // Clear existing data
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= STORY.DATA_START_ROW) {
+    sheet.getRange(STORY.DATA_START_ROW, 1, lastRow - STORY.DATA_START_ROW + 1, 12).clear();
+  }
   
   let row = STORY.DATA_START_ROW;
   
   episodes.forEach(ep => {
-    // Episode row
-    sheet.getRange(row, 1).setValue(ep.number);
-    sheet.getRange(row, 2).setValue('EPISODE');
-    sheet.getRange(row, 3).setValue(ep.title);
-    sheet.getRange(row, 1, 1, 9).setBackground(COLORS.LIGHT_BLUE).setFontWeight('bold');
+    // Episode row - RINGKASAN ALUR
+    sheet.getRange(row, STORY.COL.ID).setValue(ep.number);
+    sheet.getRange(row, STORY.COL.TYPE).setValue('EPISODE');
+    sheet.getRange(row, STORY.COL.TITLE).setValue(ep.title + '\n\n' + (ep.summary || ''));
+    sheet.getRange(row, STORY.COL.STATUS).setValue('Draft');
+    sheet.getRange(row, 1, 1, 12).setBackground(COLORS.EPISODE).setFontWeight('bold');
+    sheet.setRowHeight(row, 60);
     row++;
     
     if (ep.scenes) {
       ep.scenes.forEach(scene => {
-        // Scene row
-        sheet.getRange(row, 1).setValue(ep.number + '.' + scene.number);
-        sheet.getRange(row, 2).setValue('SCENE');
-        sheet.getRange(row, 3).setValue(scene.title || 'Scene ' + scene.number);
-        sheet.getRange(row, 4).setValue(scene.location || '');
-        sheet.getRange(row, 5).setValue(scene.timeOfDay || 'Day');
-        sheet.getRange(row, 6).setValue((scene.characters || []).join(', '));
-        sheet.getRange(row, 7).setValue(scene.costumeNote || '');
-        sheet.getRange(row, 9).setValue('Draft');
-        sheet.getRange(row, 1, 1, 9).setBackground(COLORS.LIGHT_GREEN);
+        // Scene row - CERITA SCENE
+        const sceneId = ep.number + '.' + scene.number;
+        sheet.getRange(row, STORY.COL.ID).setValue(sceneId);
+        sheet.getRange(row, STORY.COL.TYPE).setValue('SCENE');
+        sheet.getRange(row, STORY.COL.TITLE).setValue(scene.title || 'Scene ' + scene.number);
+        sheet.getRange(row, STORY.COL.LOCATION).setValue(scene.location || '');
+        sheet.getRange(row, STORY.COL.TIME).setValue(scene.time || 'Pagi');
+        sheet.getRange(row, STORY.COL.CHARACTERS).setValue((scene.characters || []).join(', '));
+        sheet.getRange(row, STORY.COL.COSTUME).setValue(scene.costume || '');
+        sheet.getRange(row, STORY.COL.STATUS).setValue('Draft');
+        sheet.getRange(row, 1, 1, 12).setBackground(COLORS.SCENE);
         row++;
         
-        // Act rows with prompts
+        // Act rows - ADEGAN + DIALOG + PROMPTS
         if (scene.acts) {
           scene.acts.forEach((act, ai) => {
             const actLetter = act.act || ['A','B','C','D'][ai];
+            const actId = sceneId + actLetter;
             const actColors = { 'A': COLORS.ACT_A, 'B': COLORS.ACT_B, 'C': COLORS.ACT_C, 'D': COLORS.ACT_D };
             
-            sheet.getRange(row, 1).setValue(ep.number + '.' + scene.number + actLetter);
-            sheet.getRange(row, 2).setValue('Act ' + actLetter);
-            sheet.getRange(row, 3).setValue(act.description || '');
-            sheet.getRange(row, 4).setValue(scene.location || '');
-            sheet.getRange(row, 5).setValue(scene.timeOfDay || 'Day');
-            sheet.getRange(row, 6).setValue((scene.characters || []).join(', '));
-            sheet.getRange(row, 7).setValue(scene.costumeNote || '');
-            sheet.getRange(row, 8).setValue(act.shotType || 'Medium');
-            sheet.getRange(row, 9).setValue('Draft');
+            // Build prompts
+            const txt2img = buildText2ImagePrompt(act, scene, characters, basicInfo);
+            const img2img = buildImage2ImagePrompt(act, scene, characters, basicInfo);
+            const img2vid = buildImage2VideoPrompt(act, scene, characters);
             
-            // Color code by act
-            sheet.getRange(row, 1, 1, 9).setBackground(actColors[actLetter] || COLORS.GRAY);
+            sheet.getRange(row, STORY.COL.ID).setValue(actId);
+            sheet.getRange(row, STORY.COL.TYPE).setValue('Act ' + actLetter);
+            sheet.getRange(row, STORY.COL.TITLE).setValue(act.description || '');
+            sheet.getRange(row, STORY.COL.LOCATION).setValue(scene.location || '');
+            sheet.getRange(row, STORY.COL.TIME).setValue(scene.time || 'Pagi');
+            sheet.getRange(row, STORY.COL.CHARACTERS).setValue((scene.characters || []).join(', '));
+            sheet.getRange(row, STORY.COL.COSTUME).setValue(scene.costume || '');
+            sheet.getRange(row, STORY.COL.SHOT).setValue(act.shot || 'Medium');
+            sheet.getRange(row, STORY.COL.STATUS).setValue('Draft');
+            sheet.getRange(row, STORY.COL.IMG_PROMPT).setValue(txt2img);
+            sheet.getRange(row, STORY.COL.VID_PROMPT).setValue(img2vid);
+            sheet.getRange(row, STORY.COL.NARRATION).setValue(extractNarration(act.description));
+            
+            sheet.getRange(row, 1, 1, 12).setBackground(actColors[actLetter] || COLORS.GRAY);
+            sheet.setRowHeight(row, 80);
             
             row++;
           });
@@ -992,86 +644,350 @@ function writeEpisodesWithPrompts(episodes) {
 }
 
 /**
- * Show generation summary - Indonesian
+ * Build Text-to-Image prompt (for Midjourney, DALL-E, Dreamina)
+ */
+function buildText2ImagePrompt(act, scene, characters, basicInfo) {
+  const parts = [];
+  
+  // Shot type
+  const shotMap = {
+    'Wide': 'Wide establishing shot',
+    'Medium': 'Medium shot, waist up',
+    'Close-up': 'Close-up shot, face detail',
+    'Extreme Close-up': 'Extreme close-up'
+  };
+  parts.push(shotMap[act.shot] || 'Medium shot');
+  
+  // Characters with appearance
+  if (scene.characters && scene.characters.length > 0) {
+    scene.characters.forEach(charName => {
+      const char = characters.find(c => c.name === charName);
+      if (char) {
+        parts.push(`${char.name} (${char.appearance || 'Indonesian person'})`);
+        if (scene.costume) {
+          parts.push(`wearing ${scene.costume}`);
+        }
+      }
+    });
+  }
+  
+  // Location
+  if (scene.location) {
+    parts.push(`in ${scene.location}`);
+  }
+  
+  // Action
+  if (act.description) {
+    // Extract visual part only
+    const visual = act.description.split('"')[0].trim();
+    if (visual) parts.push(visual);
+  }
+  
+  // Time/Lighting
+  const lightMap = {
+    'Pagi': 'morning golden hour light',
+    'Siang': 'bright daylight',
+    'Sore': 'warm sunset light',
+    'Malam': 'night scene, moonlight'
+  };
+  parts.push(lightMap[scene.time] || 'natural lighting');
+  
+  // Style
+  const styleMap = {
+    'Cinematic': 'cinematic, 35mm film, shallow depth of field',
+    'Anime': 'anime style, vibrant colors, cel shading',
+    'Realistic': 'photorealistic, 8K, detailed',
+    'Cartoon': 'cartoon style, bold colors'
+  };
+  parts.push(styleMap[basicInfo.style] || styleMap['Cinematic']);
+  
+  parts.push('high quality, detailed');
+  
+  return parts.join(', ');
+}
+
+/**
+ * Build Image-to-Image prompt (for Whisk, Photoshop AI)
+ */
+function buildImage2ImagePrompt(act, scene, characters, basicInfo) {
+  const parts = [];
+  
+  parts.push('Combine these elements:');
+  
+  // Background
+  if (scene.location) {
+    parts.push(`Background: ${scene.location}`);
+  }
+  
+  // Characters
+  if (scene.characters && scene.characters.length > 0) {
+    const charList = scene.characters.map(name => {
+      const char = characters.find(c => c.name === name);
+      return char ? `${char.name} (use reference image)` : name;
+    });
+    parts.push(`Characters: ${charList.join(', ')}`);
+  }
+  
+  // Costume
+  if (scene.costume) {
+    parts.push(`Costume: ${scene.costume}`);
+  }
+  
+  // Action
+  if (act.description) {
+    const visual = act.description.split('"')[0].trim();
+    if (visual) parts.push(`Action: ${visual}`);
+  }
+  
+  // Style
+  parts.push(`Style: ${basicInfo.style || 'Cinematic'}`);
+  parts.push('Maintain consistent lighting and style');
+  
+  return parts.join('. ');
+}
+
+/**
+ * Build Image-to-Video prompt (for Runway, Pika, Hailuo, VEO)
+ */
+function buildImage2VideoPrompt(act, scene, characters) {
+  const parts = [];
+  
+  // Shot type
+  parts.push(`${act.shot || 'Medium'} shot`);
+  
+  // Subject
+  if (scene.characters && scene.characters.length > 0) {
+    parts.push(`of ${scene.characters.slice(0, 2).join(' and ')}`);
+  }
+  
+  // Location
+  if (scene.location) {
+    parts.push(`in ${scene.location}`);
+  }
+  
+  // Action from description
+  if (act.description) {
+    const visual = act.description.split('"')[0].trim();
+    if (visual) parts.push(visual);
+  }
+  
+  // Camera movement
+  const cameraMap = {
+    'A': 'Camera slowly pushes in',
+    'B': 'Camera tracks movement',
+    'C': 'Camera holds steady',
+    'D': 'Camera slowly pulls back'
+  };
+  parts.push(cameraMap[act.act] || 'Smooth camera movement');
+  
+  // Time
+  const lightMap = {
+    'Pagi': 'morning light',
+    'Siang': 'daylight',
+    'Sore': 'sunset light',
+    'Malam': 'night lighting'
+  };
+  parts.push(lightMap[scene.time] || 'natural lighting');
+  
+  parts.push('Duration: 8 seconds, cinematic quality, smooth motion');
+  
+  return parts.join(', ');
+}
+
+/**
+ * Extract narration/dialog from description
+ */
+function extractNarration(description) {
+  if (!description) return '';
+  
+  // Extract text in quotes as dialog
+  const dialogMatch = description.match(/"([^"]+)"/g);
+  if (dialogMatch) {
+    return dialogMatch.join(' ');
+  }
+  
+  // If no dialog, return short narration
+  const sentences = description.split('.');
+  if (sentences.length > 1) {
+    return sentences[sentences.length - 1].trim();
+  }
+  
+  return '';
+}
+
+/**
+ * Write assets with all 3 prompt types
+ */
+function writeAssetsWithAllPrompts(episodes, characters, basicInfo) {
+  const sheet = getAssetsSheet();
+  if (!sheet) return;
+  
+  // Clear existing
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= ASSETS.DATA_START_ROW) {
+    sheet.getRange(ASSETS.DATA_START_ROW, 1, lastRow - ASSETS.DATA_START_ROW + 1, 11).clear();
+  }
+  
+  let assetId = 1;
+  let row = ASSETS.DATA_START_ROW;
+  
+  episodes.forEach(ep => {
+    if (ep.scenes) {
+      ep.scenes.forEach(scene => {
+        if (scene.acts) {
+          scene.acts.forEach((act, ai) => {
+            const actLetter = act.act || ['A','B','C','D'][ai];
+            const sceneId = ep.number + '.' + scene.number;
+            
+            // Build all 3 prompts
+            const txt2img = buildText2ImagePrompt(act, scene, characters, basicInfo);
+            const img2img = buildImage2ImagePrompt(act, scene, characters, basicInfo);
+            const img2vid = buildImage2VideoPrompt(act, scene, characters);
+            
+            // Get seed for consistency
+            const mainChar = characters.find(c => scene.characters && scene.characters.includes(c.name));
+            const seed = mainChar ? getSeed(mainChar.name) : getSeed(sceneId + actLetter);
+            
+            // Generate preview image
+            let imageUrl = '';
+            try {
+              imageUrl = generateImage(txt2img, { seed: seed, width: 1280, height: 720 });
+            } catch (e) {
+              Logger.log('Image error: ' + e.message);
+            }
+            
+            sheet.getRange(row, ASSETS.COL.ID).setValue(assetId);
+            sheet.getRange(row, ASSETS.COL.SCENE).setValue(sceneId);
+            sheet.getRange(row, ASSETS.COL.ACT).setValue(actLetter);
+            sheet.getRange(row, ASSETS.COL.DESCRIPTION).setValue(act.description || '');
+            sheet.getRange(row, ASSETS.COL.TXT2IMG_PROMPT).setValue(txt2img);
+            sheet.getRange(row, ASSETS.COL.IMG2IMG_PROMPT).setValue(img2img);
+            sheet.getRange(row, ASSETS.COL.IMG2VID_PROMPT).setValue(img2vid);
+            sheet.getRange(row, ASSETS.COL.STATUS).setValue(imageUrl ? 'Generated' : 'Pending');
+            sheet.getRange(row, ASSETS.COL.DURATION).setValue('8s');
+            
+            if (imageUrl) {
+              sheet.getRange(row, ASSETS.COL.IMAGE_URL).setValue(imageUrl);
+              try {
+                sheet.getRange(row, ASSETS.COL.PREVIEW).setFormula('=IMAGE("' + imageUrl + '",1)');
+              } catch (e) {}
+              sheet.setRowHeight(row, 80);
+            } else {
+              sheet.setRowHeight(row, 60);
+            }
+            
+            assetId++;
+            row++;
+          });
+        }
+      });
+    }
+  });
+}
+
+/**
+ * Update Overview sheet
+ */
+function updateOverview(episodes) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.OVERVIEW);
+  if (!sheet) return;
+  
+  // Clear existing data
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= OVERVIEW.DATA_START_ROW + 1) {
+    sheet.getRange(OVERVIEW.DATA_START_ROW + 1, 1, lastRow - OVERVIEW.DATA_START_ROW, 5).clear();
+  }
+  
+  let row = OVERVIEW.DATA_START_ROW + 1;
+  
+  episodes.forEach(ep => {
+    // Episode row
+    sheet.getRange(row, 1).setValue('📺 Episode');
+    sheet.getRange(row, 2).setValue(ep.number);
+    sheet.getRange(row, 3).setValue(ep.title);
+    sheet.getRange(row, 4).setValue(ep.summary || '');
+    sheet.getRange(row, 5).setValue('Draft');
+    sheet.getRange(row, 1, 1, 5).setBackground(COLORS.EPISODE);
+    row++;
+    
+    if (ep.scenes) {
+      ep.scenes.forEach(scene => {
+        // Scene row
+        sheet.getRange(row, 1).setValue('🎬 Scene');
+        sheet.getRange(row, 2).setValue(ep.number + '.' + scene.number);
+        sheet.getRange(row, 3).setValue(scene.title || '');
+        sheet.getRange(row, 4).setValue(scene.location + ' - ' + scene.time);
+        sheet.getRange(row, 5).setValue('Draft');
+        sheet.getRange(row, 1, 1, 5).setBackground(COLORS.SCENE);
+        row++;
+        
+        // Acts
+        if (scene.acts) {
+          scene.acts.forEach((act, ai) => {
+            const actLetter = act.act || ['A','B','C','D'][ai];
+            const actColors = { 'A': COLORS.ACT_A, 'B': COLORS.ACT_B, 'C': COLORS.ACT_C, 'D': COLORS.ACT_D };
+            
+            sheet.getRange(row, 1).setValue('🎭 Act ' + actLetter);
+            sheet.getRange(row, 2).setValue(ep.number + '.' + scene.number + actLetter);
+            sheet.getRange(row, 3).setValue(act.shot || 'Medium');
+            sheet.getRange(row, 4).setValue(act.description || '');
+            sheet.getRange(row, 5).setValue('Draft');
+            sheet.getRange(row, 1, 1, 5).setBackground(actColors[actLetter] || COLORS.GRAY);
+            row++;
+          });
+        }
+      });
+    }
+  });
+}
+
+/**
+ * Show summary - Indonesian
  */
 function showSummaryIndonesian(stats, duration, projectName, genre, style) {
   const html = HtmlService.createHtmlOutput(`
     <style>
-      body { font-family: 'Segoe UI', Arial, sans-serif; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; margin: 0; }
+      body { font-family: 'Segoe UI', Arial; padding: 20px; background: linear-gradient(135deg, #667eea, #764ba2); }
       .card { background: white; border-radius: 16px; padding: 24px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
-      h2 { color: #1a73e8; margin-top: 0; font-size: 24px; }
+      h2 { color: #1a73e8; margin-top: 0; }
       .success { color: #34a853; font-size: 28px; margin-bottom: 8px; }
-      .info { background: linear-gradient(135deg, #e8f0fe 0%, #f3e5f5 100%); padding: 16px; border-radius: 12px; margin-bottom: 20px; }
-      .info strong { font-size: 18px; color: #333; }
-      .info small { color: #666; display: block; margin-top: 4px; }
-      .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+      .info { background: #e8f0fe; padding: 16px; border-radius: 12px; margin-bottom: 20px; }
+      .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
       .stat { background: #f8f9fa; padding: 12px; border-radius: 8px; text-align: center; }
-      .stat-icon { font-size: 24px; }
-      .stat-val { font-size: 28px; font-weight: bold; color: #1a73e8; }
-      .stat-label { font-size: 12px; color: #666; }
+      .stat-val { font-size: 24px; font-weight: bold; color: #1a73e8; }
+      .stat-label { font-size: 11px; color: #666; }
       .next { background: #e8f5e9; padding: 16px; border-radius: 12px; margin-top: 16px; }
       .next h3 { margin: 0 0 12px 0; font-size: 14px; color: #2e7d32; }
-      .next ol { margin: 0; padding-left: 20px; }
-      .next li { margin: 6px 0; font-size: 13px; color: #333; }
-      button { margin-top: 20px; padding: 14px 32px; background: linear-gradient(135deg, #1a73e8 0%, #7c4dff 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; width: 100%; }
-      button:hover { opacity: 0.9; }
+      .next ol { margin: 0; padding-left: 20px; font-size: 13px; }
+      button { margin-top: 20px; padding: 14px 32px; background: #1a73e8; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; width: 100%; }
     </style>
     <div class="card">
       <div class="success">✅ Berhasil!</div>
       <h2>Generation Selesai</h2>
-      
       <div class="info">
-        <strong>${projectName}</strong>
+        <strong>${projectName}</strong><br>
         <small>Genre: ${genre} | Style: ${style}</small>
       </div>
-      
       <div class="stats">
-        <div class="stat">
-          <div class="stat-icon">👥</div>
-          <div class="stat-val">${stats.chars}</div>
-          <div class="stat-label">Karakter</div>
-        </div>
-        <div class="stat">
-          <div class="stat-icon">📺</div>
-          <div class="stat-val">${stats.eps}</div>
-          <div class="stat-label">Episode</div>
-        </div>
-        <div class="stat">
-          <div class="stat-icon">🎬</div>
-          <div class="stat-val">${stats.scenes}</div>
-          <div class="stat-label">Scene</div>
-        </div>
-        <div class="stat">
-          <div class="stat-icon">🎭</div>
-          <div class="stat-val">${stats.acts}</div>
-          <div class="stat-label">Act</div>
-        </div>
-        <div class="stat">
-          <div class="stat-icon">🖼️</div>
-          <div class="stat-val">${stats.prompts}</div>
-          <div class="stat-label">Prompts</div>
-        </div>
-        <div class="stat">
-          <div class="stat-icon">⏱️</div>
-          <div class="stat-val">${duration}s</div>
-          <div class="stat-label">Waktu</div>
-        </div>
+        <div class="stat"><div class="stat-val">${stats.chars}</div><div class="stat-label">Karakter</div></div>
+        <div class="stat"><div class="stat-val">${stats.eps}</div><div class="stat-label">Episode</div></div>
+        <div class="stat"><div class="stat-val">${stats.scenes}</div><div class="stat-label">Scene</div></div>
+        <div class="stat"><div class="stat-val">${stats.acts}</div><div class="stat-label">Act</div></div>
+        <div class="stat"><div class="stat-val">${stats.prompts}</div><div class="stat-label">Prompts</div></div>
+        <div class="stat"><div class="stat-val">${duration}s</div><div class="stat-label">Waktu</div></div>
       </div>
-      
       <div class="next">
         <h3>📋 Langkah Selanjutnya:</h3>
         <ol>
-          <li>Review <strong>Karakter</strong> di tab 👥 Characters</li>
-          <li>Review <strong>Cerita</strong> di tab 🎬 Story</li>
-          <li>Copy <strong>Image/Video Prompts</strong> dari tab 🎨 Assets</li>
-          <li>Paste prompts ke Midjourney, DALL-E, VEO, atau Runway</li>
+          <li>Review <b>Characters</b> - copy Character Prompt ke AI</li>
+          <li>Review <b>Story</b> - edit adegan jika perlu</li>
+          <li>Copy <b>Prompts</b> dari kolom J-K ke AI tools</li>
+          <li>Lihat <b>Assets</b> untuk semua prompt lengkap</li>
         </ol>
       </div>
-      
       <button onclick="google.script.host.close()">Tutup</button>
     </div>
-  `).setWidth(400).setHeight(580);
+  `).setWidth(400).setHeight(550);
   
   SpreadsheetApp.getUi().showModalDialog(html, '🎬 Hasil Generate');
 }
-
